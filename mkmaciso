@@ -30,6 +30,369 @@
 # While the script is compatible with Apple silicon Macs, it’s still recommended to run it on an x86_64 Intel Mac for optimal results.
 
 set -e # Exit on error
+
+# ==========================
+# Language (i18n) support
+# ==========================
+# Detection priority: --lang CLI flag > MKMACISO_LANG env var > auto-detect
+# ($LANG/$LC_ALL, macOS AppleLanguages) > en
+MKMACISO_LANG_CODE="en"
+_MKMACISO_LANG_CLI=""
+
+# Strip --lang / --lang=xx from arguments before positional parameters are assigned
+_MKMACISO_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lang=*)
+            _MKMACISO_LANG_CLI="${1#--lang=}"
+            shift
+            ;;
+        --lang)
+            _MKMACISO_LANG_CLI="${2:-}"
+            if [ $# -ge 2 ]; then shift 2; else shift; fi
+            ;;
+        *)
+            _MKMACISO_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${_MKMACISO_ARGS[@]}"
+unset _MKMACISO_ARGS
+
+detect_language() {
+    # 1. Explicit CLI flag wins
+    case "$_MKMACISO_LANG_CLI" in
+        zh*|ZH*) MKMACISO_LANG_CODE="zh"; return 0 ;;
+        en*|EN*) MKMACISO_LANG_CODE="en"; return 0 ;;
+    esac
+    # 2. Explicit env var
+    case "${MKMACISO_LANG:-}" in
+        zh*|ZH*) MKMACISO_LANG_CODE="zh"; return 0 ;;
+        en*|EN*) MKMACISO_LANG_CODE="en"; return 0 ;;
+    esac
+    # 3. Auto-detect from locale
+    case "${LC_ALL:-}${LANG:-}" in
+        zh*|ZH*) MKMACISO_LANG_CODE="zh"; return 0 ;;
+    esac
+    # 4. Auto-detect from macOS system language
+    if command -v defaults >/dev/null 2>&1; then
+        if defaults read -g AppleLanguages 2>/dev/null | grep -qi 'zh'; then
+            MKMACISO_LANG_CODE="zh"; return 0
+        fi
+    fi
+    # 5. Default
+    MKMACISO_LANG_CODE="en"
+}
+
+load_strings() {
+    if [ "$MKMACISO_LANG_CODE" = "zh" ]; then
+        MSG_MACOS_ONLY="错误：仅支持 macOS"
+        MSG_UNSUPPORTED_MACOS="不支持的 macOS 版本，需要 Mavericks (10.9) 或更高版本"
+        MSG_SUDO_REQUIRED="此脚本需要管理员权限"
+        MSG_DISK_CRITICAL="严重：可用空间仅 %s GB（建议 %s GB 或更多）"
+        MSG_DISK_CANNOT_CONTINUE="磁盘空间不足，无法继续"
+        MSG_DISK_LOW="警告：磁盘空间不足 - 可用 %s GB，建议 %s GB 或更多"
+        MSG_DISK_CONTINUE_PROMPT="是否继续？(Y/n - 10 秒后自动继续)："
+        MSG_ABORTED="已中止"
+        MSG_CONTINUING="继续执行..."
+        MSG_DETACH_ATTEMPT="正在卸载磁盘（第 %s/%s 次）..."
+        MSG_DISK_DETACHED="磁盘卸载成功"
+        MSG_DETACH_RETRY="卸载失败，重试中..."
+        MSG_DETACH_FAILED="经过 %s 次尝试，仍无法卸载 %s"
+        MSG_CLEANUP="正在清理临时文件..."
+        MSG_INTERACTIVE="交互模式"
+        MSG_STEP1="步骤 1/3：选择 macOS 版本"
+        MSG_COL_HEADER="#   版本      名称              年份"
+        MSG_DEFAULT_VER="默认：16（Tahoe - 最新版）"
+        MSG_PROMPT_VER="请输入序号 [2-%s]，直接回车使用默认："
+        MSG_INVALID_VER="无效的选择，请输入 2 到 %s 之间的数字"
+        MSG_STEP2="步骤 2/3：选择镜像格式"
+        MSG_SELECTED_MACOS="已选择的 macOS：%s（%s）"
+        MSG_FMT_ISO="- 用于虚拟机（Proxmox、QEMU、VMware、VirtualBox）"
+        MSG_FMT_ISO_DESC="以 DVD/CD 光驱方式挂载到虚拟机"
+        MSG_FMT_DMG="- 用于制作启动 U 盘（Windows 上用 Rufus，Linux 上用 dd）"
+        MSG_FMT_DMG_DESC="也可作为虚拟硬盘用于虚拟机"
+        MSG_DEFAULT_ISO="默认：[1] ISO"
+        MSG_PROMPT_FMT="请输入序号 [1-2]，直接回车使用默认："
+        MSG_INVALID_FMT="无效的选择，请输入 1 或 2"
+        MSG_STEP3="步骤 3/3：选择输出位置"
+        MSG_SELECTED_FORMAT="已选择的格式：%s"
+        MSG_OUT_CURDIR="当前目录"
+        MSG_OUT_DESKTOP="桌面"
+        MSG_OUT_DOWNLOADS="下载"
+        MSG_OUT_HOME="主目录"
+        MSG_OUT_CUSTOM="自定义路径"
+        MSG_OUT_CUSTOM_DESC="输入自定义路径"
+        MSG_DEFAULT_OUT="默认：[1] 当前目录"
+        MSG_PROMPT_OUT="请输入序号 [1-5]，直接回车使用默认："
+        MSG_INVALID_OUT="无效的选择，请输入 1-5"
+        MSG_PROMPT_CUSTOM_PATH="请输入自定义路径："
+        MSG_DIR_NOT_EXIST="目录不存在：%s"
+        MSG_PROMPT_CREATE_DIR="是否创建？[y/N]："
+        MSG_CONFIRM_TITLE="请确认"
+        MSG_CONFIRM_VERSION="macOS 版本："
+        MSG_CONFIRM_FORMAT="镜像格式："
+        MSG_CONFIRM_OUTPUT="输出文件："
+        MSG_PROMPT_PROCEED="按以上设置继续？[Y/n]："
+        MSG_ABORTED_BY_USER="用户已取消"
+        MSG_UNSUPPORTED_LEGACY="不支持的旧版 macOS：%s"
+        MSG_DOWNLOADING_MACOS="正在下载 macOS %s..."
+        MSG_MAVERICKS_URL="已获取 Mavericks 下载地址：%s"
+        MSG_DOWNLOADING_MAVERICKS="正在使用特殊方式下载 macOS Mavericks..."
+        MSG_INSTALLING_TO_APPS="正在将 macOS %s 安装器安装到 /Applications..."
+        MSG_ARM64_MANUAL="检测到 Apple 芯片，使用手动安装..."
+        MSG_INSTALLED_TO_APPS="已将 %s 安装到 /Applications"
+        MSG_NOT_SUITABLE_USB="注意：该 %s 不适合使用 'createinstallmedia' 制作启动 U 盘"
+        MSG_DIRECT_DL="正在通过 Apple 官方直链下载 macOS %s 安装器..."
+        MSG_DOWNLOADING_FILE="正在下载 %s..."
+        MSG_DOWNLOAD_FAILED="下载失败：%s"
+        MSG_BUILDING_INSTALLER="文件已全部下载完成，正在构建 macOS %s 安装器..."
+        MSG_INSTALL_SUCCESS="已成功将 %s 安装到 /Applications"
+        MSG_AS_LIMIT_TITLE="Apple 芯片限制"
+        MSG_AS_LIMIT_L1="在 Apple 芯片上，softwareupdate 无法下载"
+        MSG_AS_LIMIT_L2="比设备出厂预装系统更旧的 macOS 版本。"
+        MSG_ARM64_DETECTED="检测到 Apple 芯片"
+        MSG_INTEL_DETECTED="检测到 Intel CPU"
+        MSG_INTEL_OLD_OS="此 Mac 的系统版本早于 Big Sur，将尝试为 macOS %s 使用直链下载"
+        MSG_INTEL_NEED_BIGSUR="Intel Mac 必须运行 macOS 11 (Big Sur) 或更高版本，才能使用 softwareupdate 下载 macOS"
+        MSG_UPGRADE_MACOS="请将 macOS 升级到 11 或更高版本"
+        MSG_FETCHING_INSTALLERS="正在获取可用的 macOS 安装器列表..."
+        MSG_NOT_AVAILABLE="macOS %s（%s）无法在此系统上下载"
+        MSG_AVAILABLE_INSTALLERS="可用的安装器："
+        MSG_FOUND_VERSION="找到最新的 %s 版本：%s"
+        MSG_DOWNLOADING_INSTALLER="正在下载并安装 macOS %s 安装器（可能需要较长时间）..."
+        MSG_DL_ATTEMPT="下载中（第 %s/%s 次尝试）..."
+        MSG_DL_SUCCESS="下载成功！"
+        MSG_DL_FAILED="已尝试 %s 次，下载失败"
+        MSG_RETRYING="5 秒后重试..."
+        MSG_CREATING_IMAGE="正在创建 macOS %s %s 镜像..."
+        MSG_CREATING_ISO="正在创建 macOS %s ISO 镜像..."
+        MSG_CREATING_DMG="正在创建 macOS %s DMG 镜像..."
+        MSG_CONVERTING_ISO="正在转换为 ISO 格式..."
+        MSG_OPTIMIZING_DMG="正在优化 DMG 文件大小..."
+        MSG_MOVE_TO="移动到 %s"
+        MSG_AS_CATALINA_ALT="检测到 Apple 芯片，Catalina 将使用替代方法（而非 'createinstallmedia'）"
+        MSG_PATCHING_SIERRA="正在修补 Info.plist 以兼容 Sierra..."
+        MSG_RUNNING_CIM="正在运行 createinstallmedia..."
+        MSG_STARTING_OPT="开始优化 DMG 文件大小..."
+        MSG_SHRINKING="正在将安装器分区收缩到最小..."
+        MSG_EXPANDING="正在扩展分区以整理数据..."
+        MSG_RESIZE_ATTEMPT="调整分区大小（第 %s/%s 次）..."
+        MSG_RESIZE_SUCCESS="分区大小调整成功"
+        MSG_RESIZE_RETRY="调整失败，重试中..."
+        MSG_FINAL_OPT="正在做最终优化..."
+        MSG_INVALID_FORMAT="无效的镜像格式 '%s'，将使用 dmg"
+        MSG_RUN_HELP="使用 -h 或 --help 查看用法"
+        MSG_UNKNOWN_VERSION="未知的 macOS 版本：%s"
+        MSG_SUPPORTED_VERSIONS="支持的版本："
+        MSG_SUPPORTED_CODENAMES="支持的代号："
+        MSG_TARGET_MACOS="目标 macOS："
+        MSG_IMAGE_FORMAT_LABEL="镜像格式："
+        MSG_OUTPUT_PATH_LABEL="输出路径："
+        MSG_WORK_DIR_LABEL="工作目录："
+        MSG_FOUND_INSTALLER="找到已存在的安装器："
+        MSG_INSTALLER_NOT_FOUND="未找到安装器，开始下载..."
+        MSG_INSTALL_FAILED="安装 macOS 安装器失败"
+        MSG_IMAGE_TOO_SMALL="最终镜像小于 4GB"
+        MSG_IMAGE_CORRUPT="文件可能已损坏或不完整"
+        MSG_REMOVING_CORRUPT="正在删除损坏的文件..."
+        MSG_CREATE_SUCCESS="安装器镜像创建成功！"
+        MSG_FILE_LABEL="文件："
+        MSG_SIZE_LABEL="大小："
+        MSG_ISO_INTENDED="此 ISO 镜像用于创建 macOS 虚拟机："
+        MSG_ISO_COMPAT="  - 兼容 Proxmox VE、QEMU、VMware 和 VirtualBox"
+        MSG_ISO_ATTACH="  - 以 DVD/CD 光驱的方式添加到虚拟机"
+        MSG_DMG_INTENDED="此 DMG 镜像的用途："
+        MSG_DMG_FLASH="  - 使用 Rufus（Windows）或 dd（Linux）烧录到 U 盘"
+        MSG_DMG_VM="  - 也可用于虚拟机（需先转换为 Hyper-V 用的 .vhd 或 VMware 用的 .vmdk）"
+        MSG_DMG_HDD="  - 以虚拟硬盘的方式添加到虚拟机"
+        MSG_CREATE_FAILED="创建 macOS_%s.%s 镜像失败"
+        MSG_PIPED_UNAVAILABLE="通过管道运行时无法使用交互模式"
+        MSG_EXAMPLE_LABEL="示例："
+        MSG_HELP_USAGE="用法："
+        MSG_HELP_PARAMS="参数："
+        MSG_HELP_PARAM_VERSION="macOS 版本号或代号，例如 26 或 Tahoe"
+        MSG_HELP_PARAM_FORMAT="iso 或 dmg（默认：iso）"
+        MSG_HELP_PARAM_OUTPUT="输出文件路径（默认：./macOS_<version>.<format>）"
+        MSG_HELP_LANG_FLAG="强制指定输出语言（覆盖自动检测）"
+        MSG_HELP_LANG_ENV="也可设置环境变量 MKMACISO_LANG=zh|en；否则根据 \$LANG 自动检测"
+        MSG_HELP_VERSIONS="支持的版本："
+        MSG_HELP_EXAMPLES="示例："
+        MSG_HELP_EX_ISO="创建 Sonoma ISO"
+        MSG_HELP_EX_DMG="创建 Sonoma DMG"
+        MSG_HELP_EX_PATH="在指定路径创建 Sonoma DMG"
+        MSG_HELP_REQS="系统要求："
+        MSG_HELP_REQ_OS="制作 macOS 10.13+ 镜像需要 macOS 11 (Big Sur) 或更高版本"
+        MSG_HELP_REQ_NET="下载安装器需要互联网连接"
+        MSG_HELP_REQ_DISK="足够的磁盘空间（构建时约需 20-40GB，最终大小不一）"
+        MSG_HELP_REQ_SUDO="管理员权限（sudo）"
+        MSG_HELP_REQ_INTEL="为获得最佳效果，建议在 Intel Mac 上运行"
+        MSG_TAGLINE="mkmaciso – 创建 macOS 安装器 ISO 和 DMG 镜像的终极工具                      "
+        MSG_INTERACTIVE_PADDED="                                  交互模式                                  "
+        MSG_BOX_TOP="╔═════════════════════════════════════════════════════════════════╗"
+        MSG_BOX_MID="╠═════════════════════════════════════════════════════════════════╣"
+        MSG_BOX_BOT="╚═════════════════════════════════════════════════════════════════╝"
+        MSG_BOX_AS_TITLE="                         Apple 芯片限制                          "
+        MSG_BOX_AS_L1="在 Apple 芯片上，softwareupdate 无法下载                       "
+        MSG_BOX_AS_L2="比设备出厂预装系统更旧的 macOS 版本。                          "
+    else
+        MSG_MACOS_ONLY="Error: macOS only"
+        MSG_UNSUPPORTED_MACOS="Unsupported macOS version. Requires Mavericks (10.9) or newer"
+        MSG_SUDO_REQUIRED="This script requires administrator privileges"
+        MSG_DISK_CRITICAL="CRITICAL: Only %s GB available (%s GB or more recommended)"
+        MSG_DISK_CANNOT_CONTINUE="Cannot continue due to low disk space"
+        MSG_DISK_LOW="WARNING: Low disk space - %s GB available, %s GB or more recommended"
+        MSG_DISK_CONTINUE_PROMPT="Continue? (Y/n - auto-yes in 10 seconds): "
+        MSG_ABORTED="Aborted"
+        MSG_CONTINUING="Continuing..."
+        MSG_DETACH_ATTEMPT="Detach attempt %s of %s..."
+        MSG_DISK_DETACHED="Disk detached successfully"
+        MSG_DETACH_RETRY="Detach failed, retrying..."
+        MSG_DETACH_FAILED="Failed to detach %s after %s attempts"
+        MSG_CLEANUP="Cleaning up temporary files..."
+        MSG_INTERACTIVE="Interactive mode"
+        MSG_STEP1="Step 1/3: Select macOS Version"
+        MSG_COL_HEADER="#   Version    Name              Year"
+        MSG_DEFAULT_VER="Default: 16 (Tahoe - latest)"
+        MSG_PROMPT_VER="Enter your choice [2-%s] or press Enter for default: "
+        MSG_INVALID_VER="Invalid choice. Please enter a number between 2 and %s"
+        MSG_STEP2="Step 2/3: Select Image Format"
+        MSG_SELECTED_MACOS="Selected macOS: %s (%s)"
+        MSG_FMT_ISO="- For virtual machines (Proxmox, QEMU, VMware, VirtualBox)"
+        MSG_FMT_ISO_DESC="Attach to VMs as DVD/CD drive"
+        MSG_FMT_DMG="- For USB drives (use Rufus on Windows, dd on Linux)"
+        MSG_FMT_DMG_DESC="Can also be used with VMs as virtual hard disk"
+        MSG_DEFAULT_ISO="Default: [1] ISO"
+        MSG_PROMPT_FMT="Enter your choice [1-2] or press Enter for default: "
+        MSG_INVALID_FMT="Invalid choice. Please enter 1 or 2"
+        MSG_STEP3="Step 3/3: Select Output Location"
+        MSG_SELECTED_FORMAT="Selected Format: %s"
+        MSG_OUT_CURDIR="Current Directory"
+        MSG_OUT_DESKTOP="Desktop"
+        MSG_OUT_DOWNLOADS="Downloads"
+        MSG_OUT_HOME="Home Directory"
+        MSG_OUT_CUSTOM="Custom Path"
+        MSG_OUT_CUSTOM_DESC="Enter your own path"
+        MSG_DEFAULT_OUT="Default: [1] Current Directory"
+        MSG_PROMPT_OUT="Enter your choice [1-5] or press Enter for default: "
+        MSG_INVALID_OUT="Invalid choice. Please enter 1-5"
+        MSG_PROMPT_CUSTOM_PATH="Enter custom path: "
+        MSG_DIR_NOT_EXIST="Directory does not exist: %s"
+        MSG_PROMPT_CREATE_DIR="Create it? [y/N]: "
+        MSG_CONFIRM_TITLE="Confirmation"
+        MSG_CONFIRM_VERSION="macOS Version:"
+        MSG_CONFIRM_FORMAT="Image Format:"
+        MSG_CONFIRM_OUTPUT="Output File:"
+        MSG_PROMPT_PROCEED="Proceed with these settings? [Y/n]: "
+        MSG_ABORTED_BY_USER="Aborted by user"
+        MSG_UNSUPPORTED_LEGACY="Unsupported legacy macOS version: %s"
+        MSG_DOWNLOADING_MACOS="Downloading macOS %s..."
+        MSG_MAVERICKS_URL="Mavericks URL detected: %s"
+        MSG_DOWNLOADING_MAVERICKS="Downloading macOS Mavericks using special method..."
+        MSG_INSTALLING_TO_APPS="Installing macOS %s installer to /Applications..."
+        MSG_ARM64_MANUAL="Apple silicon detected, using manual installation..."
+        MSG_INSTALLED_TO_APPS="Installed %s to /Applications"
+        MSG_NOT_SUITABLE_USB="Note: This %s is not suitable for creating a bootable USB using 'createinstallmedia'"
+        MSG_DIRECT_DL="Downloading macOS %s installer using direct Apple URLs..."
+        MSG_DOWNLOADING_FILE="Downloading %s..."
+        MSG_DOWNLOAD_FAILED="Failed to download %s"
+        MSG_BUILDING_INSTALLER="All files downloaded. Building macOS %s installer app..."
+        MSG_INSTALL_SUCCESS="Successfully installed %s to /Applications"
+        MSG_AS_LIMIT_TITLE="Apple silicon Limitation"
+        MSG_AS_LIMIT_L1="On Apple silicon, softwareupdate cannot download macOS versions"
+        MSG_AS_LIMIT_L2="older than the one that originally shipped with your device."
+        MSG_ARM64_DETECTED="Apple silicon detected"
+        MSG_INTEL_DETECTED="Intel CPU detected"
+        MSG_INTEL_OLD_OS="This Mac is running a version older than Big Sur, will attempt direct download for macOS %s"
+        MSG_INTEL_NEED_BIGSUR="Intel Macs must be running macOS 11 (Big Sur) or newer to download macOS using softwareupdate"
+        MSG_UPGRADE_MACOS="Please upgrade your macOS to version 11 or newer"
+        MSG_FETCHING_INSTALLERS="Fetching available macOS installers..."
+        MSG_NOT_AVAILABLE="macOS %s (%s) is not available for download on this system"
+        MSG_AVAILABLE_INSTALLERS="Available installers:"
+        MSG_FOUND_VERSION="Found latest %s version: %s"
+        MSG_DOWNLOADING_INSTALLER="Downloading and installing macOS %s installer (this may take a while)..."
+        MSG_DL_ATTEMPT="Download attempt %s of %s..."
+        MSG_DL_SUCCESS="Download successful!"
+        MSG_DL_FAILED="Download failed after %s attempts"
+        MSG_RETRYING="Retrying in 5 seconds..."
+        MSG_CREATING_IMAGE="Creating macOS %s %s image..."
+        MSG_CREATING_ISO="Creating macOS %s ISO image..."
+        MSG_CREATING_DMG="Creating macOS %s DMG image..."
+        MSG_CONVERTING_ISO="Converting to ISO format..."
+        MSG_OPTIMIZING_DMG="Optimizing DMG file size..."
+        MSG_MOVE_TO="Move to %s"
+        MSG_AS_CATALINA_ALT="Apple Silicon detected. Using alternative method for Catalina instead of 'createinstallmedia'"
+        MSG_PATCHING_SIERRA="Patching Info.plist for Sierra compatibility..."
+        MSG_RUNNING_CIM="Running createinstallmedia..."
+        MSG_STARTING_OPT="Starting DMG file size optimization..."
+        MSG_SHRINKING="Shrinking macOS installer partition to minimum..."
+        MSG_EXPANDING="Expanding back to consolidate data ..."
+        MSG_RESIZE_ATTEMPT="Resize attempt %s of %s..."
+        MSG_RESIZE_SUCCESS="Partition resized successfully"
+        MSG_RESIZE_RETRY="Resize failed, retrying..."
+        MSG_FINAL_OPT="Final optimization..."
+        MSG_INVALID_FORMAT="Invalid image format '%s'; falling back to dmg"
+        MSG_RUN_HELP="Run with -h or --help for usage"
+        MSG_UNKNOWN_VERSION="Unknown macOS version: %s"
+        MSG_SUPPORTED_VERSIONS="Supported versions:"
+        MSG_SUPPORTED_CODENAMES="Supported codenames:"
+        MSG_TARGET_MACOS="Target macOS:"
+        MSG_IMAGE_FORMAT_LABEL="Image format:"
+        MSG_OUTPUT_PATH_LABEL="Output path:"
+        MSG_WORK_DIR_LABEL="Working directory:"
+        MSG_FOUND_INSTALLER="Found existing installer at:"
+        MSG_INSTALLER_NOT_FOUND="Installer not found, downloading..."
+        MSG_INSTALL_FAILED="Failed to install macOS installer app"
+        MSG_IMAGE_TOO_SMALL="Final image is smaller than 4GB"
+        MSG_IMAGE_CORRUPT="The file is likely corrupted or incomplete"
+        MSG_REMOVING_CORRUPT="Remove corrupted file..."
+        MSG_CREATE_SUCCESS="Successfully created installer image!"
+        MSG_FILE_LABEL="File:"
+        MSG_SIZE_LABEL="Size:"
+        MSG_ISO_INTENDED="This ISO image is intended for creating macOS virtual machine:"
+        MSG_ISO_COMPAT="  - Compatible with Proxmox VE, QEMU, VMware, and VirtualBox"
+        MSG_ISO_ATTACH="  - Add as DVD/CD drive to the VM"
+        MSG_DMG_INTENDED="This DMG image is intended for:"
+        MSG_DMG_FLASH="  - Flash to USB drive using Rufus (Windows) or dd (Linux)"
+        MSG_DMG_VM="  - Can also be used with virtual machines (requires conversion to .vhd for Hyper-V or .vmdk for VMware)"
+        MSG_DMG_HDD="  - Add to the VM as a virtual hard drive"
+        MSG_CREATE_FAILED="Failed to create macOS_%s.%s image"
+        MSG_PIPED_UNAVAILABLE="Interactive mode unavailable when piped"
+        MSG_EXAMPLE_LABEL="Example: "
+        MSG_HELP_USAGE="Usage:"
+        MSG_HELP_PARAMS="Parameters:"
+        MSG_HELP_PARAM_VERSION="macOS version number or codename, e.g. 26 or Tahoe"
+        MSG_HELP_PARAM_FORMAT="iso or dmg (default: iso)"
+        MSG_HELP_PARAM_OUTPUT="Output file path (default: ./macOS_<version>.<format>)"
+        MSG_HELP_LANG_FLAG="Force output language (overrides auto-detection)"
+        MSG_HELP_LANG_ENV="MKMACISO_LANG=zh|en also works; auto-detected from \$LANG otherwise"
+        MSG_HELP_VERSIONS="Supported versions:"
+        MSG_HELP_EXAMPLES="Examples:"
+        MSG_HELP_EX_ISO="Create Sonoma ISO"
+        MSG_HELP_EX_DMG="Create Sonoma DMG"
+        MSG_HELP_EX_PATH="Create Sonoma DMG at specified path"
+        MSG_HELP_REQS="Requirements:"
+        MSG_HELP_REQ_OS="macOS 11 (Big Sur) or later for create macOS 10.13+ image"
+        MSG_HELP_REQ_NET="Internet connection for downloading installers"
+        MSG_HELP_REQ_DISK="Sufficient disk space (~20-40GB temporary, final size varies)"
+        MSG_HELP_REQ_SUDO="Administrator privileges (sudo)"
+        MSG_HELP_REQ_INTEL="For best results, run this on Intel Macs"
+        MSG_TAGLINE="mkmaciso – the ultimate tool for creating macOS installer ISO and DMG images"
+        MSG_INTERACTIVE_PADDED="                              Interactive mode                              "
+        MSG_BOX_TOP="╔═════════════════════════════════════════════════════════════════╗"
+        MSG_BOX_MID="╠═════════════════════════════════════════════════════════════════╣"
+        MSG_BOX_BOT="╚═════════════════════════════════════════════════════════════════╝"
+        MSG_BOX_AS_TITLE="                    Apple silicon Limitation                     "
+        MSG_BOX_AS_L1="On Apple silicon, softwareupdate cannot download macOS versions"
+        MSG_BOX_AS_L2="older than the one that originally shipped with your device.   "
+    fi
+}
+detect_language
+load_strings
+# ==========================
+# End of Language (i18n) support
+# ==========================
 #set -x # Debug
 
 # Official Apple download URLs for macOS 10.7-10.12 (except 10.9)
@@ -69,11 +432,11 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Run on macOS only
-[ "$(uname -s)" != "Darwin" ] && echo "${RED}Error: macOS only${NC}" && exit 1
+[ "$(uname -s)" != "Darwin" ] && echo "${RED}$MSG_MACOS_ONLY${NC}" && exit 1
 
 # Requires Mavericks (10.9) or newer to run this script
 if [ "$KERNEL_VERSION" -lt 13 ]; then
-  echo "${RED}Unsupported macOS version. Requires Mavericks (10.9) or newer${NC}"
+  echo "${RED}$MSG_UNSUPPORTED_MACOS${NC}"
   exit 1
 fi
 
@@ -92,7 +455,7 @@ log_error() {
 
 check_sudo_access() {
     if ! sudo -v; then
-        log_error "This script requires administrator privileges"
+        log_error "$MSG_SUDO_REQUIRED"
         exit 1
     fi
     
@@ -109,21 +472,21 @@ check_disk_space() {
     available=$(df -g . | awk 'NR==2 {print $4}')
     
     if [ "$available" -lt "$threshold_gb" ]; then
-        log_error "CRITICAL: Only ${available} GB available, (${required_gb} GB or more recommended"
-        log_error "Cannot continue due to low disk space"
+        log_error "$(printf "$MSG_DISK_CRITICAL" "$available" "$required_gb")"
+        log_error "$MSG_DISK_CANNOT_CONTINUE"
         exit 1
     elif [ "$available" -lt "$required_gb" ]; then
-        log_error "WARNING: Low disk space - ${available} GB available, ${required_gb} GB or more recommended"
+        log_error "$(printf "$MSG_DISK_LOW" "$available" "$required_gb")"
         echo ""
-        echo -ne "${YELLOW}[WARN]${NC} Continue? (Y/n - auto-yes in 10 seconds): "
+        echo -ne "${YELLOW}[WARN]${NC} $MSG_DISK_CONTINUE_PROMPT"
         read -t 10 answer || answer="y"
         case "$answer" in
             [Nn]|[Nn][Oo])
-                log_error "Aborted"
+                log_error "$MSG_ABORTED"
                 exit 1
                 ;;
             *)
-                log_info "Continuing..."
+                log_info "$MSG_CONTINUING"
                 echo ""
                 ;;
         esac
@@ -136,15 +499,15 @@ detach_disk() {
     [ -z "$disk" ] && return 0
     
     for attempt in $(seq 1 "$RETRIES_COUNT"); do
-        log_info "Detach attempt $attempt of $RETRIES_COUNT..."
+        log_info "$(printf "$MSG_DETACH_ATTEMPT" "$attempt" "$RETRIES_COUNT")"
         if sync && sleep 5 && hdiutil detach -quiet "$disk" || hdiutil detach -quiet "$disk" -force; then
-            log_info "Disk detached successfully"
+            log_info "$MSG_DISK_DETACHED"
             return 0
         fi
-        [ "$attempt" -lt "$RETRIES_COUNT" ] && log_warn "Detach failed, retrying..."
+        [ "$attempt" -lt "$RETRIES_COUNT" ] && log_warn "$MSG_DETACH_RETRY"
     done
     
-    log_error "Failed to detach $disk after $RETRIES_COUNT attempts"
+    log_error "$(printf "$MSG_DETACH_FAILED" "$disk" "$RETRIES_COUNT")"
     return 1
 }
 
@@ -160,7 +523,7 @@ cleanup() {
             detach_disk "$DISK_ID"
         fi
         
-        log_info "Cleaning up temporary files..."
+        log_info "$MSG_CLEANUP"
         sudo rm -rf "$WORK_DIR"
     fi
 }
@@ -277,9 +640,9 @@ print_header() {
     clear
     echo -e "${BOLD}${CYAN}"
     echo "╔══════════════════════════════════════════════════════════════════════════════╗"
-    echo "║ mkmaciso – the ultimate tool for creating macOS installer ISO and DMG images ║"
+    echo "║ $MSG_TAGLINE ║"
     echo "╠══════════════════════════════════════════════════════════════════════════════╣"
-    echo "║                               Interactive mode                               ║"
+    echo "║ $MSG_INTERACTIVE_PADDED ║"
     echo "╚══════════════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -309,7 +672,7 @@ declare -a MACOS_VERSIONS=(
 
 show_version_menu() {
     print_header
-    echo -e "${BOLD}Step 1/3: Select macOS Version${NC}"
+    echo -e "${BOLD}$MSG_STEP1${NC}"
     print_separator
     echo ""
     
@@ -319,7 +682,7 @@ show_version_menu() {
     col=0
     
     # Print versions in two columns
-    echo -e "  ${BOLD}#   Version    Name              Year${NC}    ${BOLD}#   Version    Name              Year${NC}"
+    echo -e "  ${BOLD}$MSG_COL_HEADER${NC}    ${BOLD}$MSG_COL_HEADER${NC}"
     print_separator
     
     local total
@@ -345,9 +708,9 @@ show_version_menu() {
     echo ""
     print_separator
     echo ""
-    echo -e "  ${YELLOW}Default: 16 (Tahoe - latest)${NC}"
+    echo -e "  ${YELLOW}$MSG_DEFAULT_VER${NC}"
     echo ""
-    echo -n "  Enter your choice [2-$((total+1))] or press Enter for default: "
+    printf "  $MSG_PROMPT_VER" "$((total+1))"
 }
 
 show_format_menu() {
@@ -357,24 +720,24 @@ show_format_menu() {
     selected_name="$2"
     
     print_header
-    echo -e "${BOLD}Step 2/3: Select Image Format${NC}"
+    echo -e "${BOLD}$MSG_STEP2${NC}"
     print_separator
     echo ""
-    echo -e "  Selected macOS: $selected_name ($selected_version)"
-    echo ""
-    print_separator
-    echo ""
-    echo -e "  ${CYAN}1${NC})  ${BOLD}ISO${NC}  - For virtual machines (Proxmox, QEMU, VMware, VirtualBox)"
-    echo "            Attach to VMs as DVD/CD drive"
-    echo ""
-    echo -e "  ${CYAN}2${NC})  ${BOLD}DMG${NC}  - For USB drives (use Rufus on Windows, dd on Linux)"
-    echo "            Can also be used with VMs as virtual hard disk"
+    printf "  $MSG_SELECTED_MACOS\n" "$selected_name" "$selected_version"
     echo ""
     print_separator
     echo ""
-    echo -e "  ${YELLOW}Default: [1] ISO${NC}"
+    echo -e "  ${CYAN}1${NC})  ${BOLD}ISO${NC}  $MSG_FMT_ISO"
+    echo "            $MSG_FMT_ISO_DESC"
     echo ""
-    echo -n "  Enter your choice [1-2] or press Enter for default: "
+    echo -e "  ${CYAN}2${NC})  ${BOLD}DMG${NC}  $MSG_FMT_DMG"
+    echo "            $MSG_FMT_DMG_DESC"
+    echo ""
+    print_separator
+    echo ""
+    echo -e "  ${YELLOW}$MSG_DEFAULT_ISO${NC}"
+    echo ""
+    echo -n "  $MSG_PROMPT_FMT"
 }
 
 show_output_menu() {
@@ -386,34 +749,34 @@ show_output_menu() {
     selected_format="$3"
     
     print_header
-    echo -e "${BOLD}Step 3/3: Select Output Location${NC}"
+    echo -e "${BOLD}$MSG_STEP3${NC}"
     print_separator
     echo ""
-    echo -e "  Selected macOS: $selected_name ($selected_version)"
-    echo -e "  Selected Format: $(echo "$selected_format" | tr '[:lower:]' '[:upper:]')"
+    printf "  $MSG_SELECTED_MACOS\n" "$selected_name" "$selected_version"
+    printf "  $MSG_SELECTED_FORMAT\n" "$(echo "$selected_format" | tr '[:lower:]' '[:upper:]')"
     echo ""
     print_separator
     echo ""
-    echo -e "  ${CYAN}1${NC})  ${BOLD}Current Directory${NC}"
+    echo -e "  ${CYAN}1${NC})  ${BOLD}$MSG_OUT_CURDIR${NC}"
     echo "      $(pwd)"
     echo ""
-    echo -e "  ${CYAN}2${NC})  ${BOLD}Desktop${NC}"
+    echo -e "  ${CYAN}2${NC})  ${BOLD}$MSG_OUT_DESKTOP${NC}"
     echo "      $HOME/Desktop"
     echo ""
-    echo -e "  ${CYAN}3${NC})  ${BOLD}Downloads${NC}"
+    echo -e "  ${CYAN}3${NC})  ${BOLD}$MSG_OUT_DOWNLOADS${NC}"
     echo "      $HOME/Downloads"
     echo ""
-    echo -e "  ${CYAN}4${NC})  ${BOLD}Home Directory${NC}"
+    echo -e "  ${CYAN}4${NC})  ${BOLD}$MSG_OUT_HOME${NC}"
     echo "      $HOME"
     echo ""
-    echo -e "  ${CYAN}5${NC})  ${BOLD}Custom Path${NC}"
-    echo "      Enter your own path"
+    echo -e "  ${CYAN}5${NC})  ${BOLD}$MSG_OUT_CUSTOM${NC}"
+    echo "      $MSG_OUT_CUSTOM_DESC"
     echo ""
     print_separator
     echo ""
-    echo -e "  ${YELLOW}Default: [1] Current Directory${NC}"
+    echo -e "  ${YELLOW}$MSG_DEFAULT_OUT${NC}"
     echo ""
-    echo -n "  Enter your choice [1-5] or press Enter for default: "
+    echo -n "  $MSG_PROMPT_OUT"
 }
 
 show_confirmation() {
@@ -427,16 +790,16 @@ show_confirmation() {
     output_file="$4"
     
     print_header
-    echo -e "${BOLD}Confirmation${NC}"
+    echo -e "${BOLD}$MSG_CONFIRM_TITLE${NC}"
     print_separator
     echo ""
-    echo -e "  ${BOLD}macOS Version:${NC}  $selected_name ($selected_version)"
-    echo -e "  ${BOLD}Image Format:${NC}   $(echo "$selected_format" | tr '[:lower:]' '[:upper:]')"
-    echo -e "  ${BOLD}Output File:${NC}    $output_file"
+    printf "  ${BOLD}$MSG_CONFIRM_VERSION${NC}  %s (%s)\n" "$selected_name" "$selected_version"
+    printf "  ${BOLD}$MSG_CONFIRM_FORMAT${NC}   %s\n" "$(echo "$selected_format" | tr '[:lower:]' '[:upper:]')"
+    printf "  ${BOLD}$MSG_CONFIRM_OUTPUT${NC}    %s\n" "$output_file"
     echo ""
     print_separator
     echo ""
-    echo -n "  Proceed with these settings? [Y/n]: "
+    echo -n "  $MSG_PROMPT_PROCEED"
 }
 
 run_interactive_menu() {
@@ -468,7 +831,7 @@ run_interactive_menu() {
             IFS='|' read -r selected_version selected_name _ <<< "${MACOS_VERSIONS[$idx]}"
             break
         else
-            echo -e "\n  ${RED}Invalid choice. Please enter a number between 2 and $((${#MACOS_VERSIONS[@]} + 1))${NC}"
+            echo -e "\n  ${RED}$(printf "$MSG_INVALID_VER" "$((${#MACOS_VERSIONS[@]} + 1))")${NC}"
             sleep 2
         fi
     done
@@ -493,7 +856,7 @@ run_interactive_menu() {
                 break
                 ;;
             *)
-                echo -e "\n  ${RED}Invalid choice. Please enter 1 or 2${NC}"
+                echo -e "\n  ${RED}$MSG_INVALID_FMT${NC}"
                 sleep 2
                 ;;
         esac
@@ -528,7 +891,7 @@ run_interactive_menu() {
                 ;;
             5)
                 echo ""
-                echo -n "  Enter custom path: "
+                echo -n "  $MSG_PROMPT_CUSTOM_PATH"
                 read -r custom_path
                 # Expand ~ if present
                 custom_path="${custom_path/#\~/$HOME}"
@@ -536,8 +899,8 @@ run_interactive_menu() {
                     output_dir="$custom_path"
                     break
                 else
-                    echo -e "\n  ${RED}Directory does not exist: $custom_path${NC}"
-                    echo -n "  Create it? [y/N]: "
+                    echo -e "\n  ${RED}$(printf "$MSG_DIR_NOT_EXIST" "$custom_path")${NC}"
+                    echo -n "  $MSG_PROMPT_CREATE_DIR"
                     read -r create_dir
                     if [[ "$create_dir" =~ ^[Yy] ]]; then
                         mkdir -p "$custom_path"
@@ -547,7 +910,7 @@ run_interactive_menu() {
                 fi
                 ;;
             *)
-                echo -e "\n  ${RED}Invalid choice. Please enter 1-5${NC}"
+                echo -e "\n  ${RED}$MSG_INVALID_OUT${NC}"
                 sleep 2
                 ;;
         esac
@@ -564,7 +927,7 @@ run_interactive_menu() {
     
     if [[ "$confirm" =~ ^[Nn] ]]; then
         echo ""
-        echo -e "  ${YELLOW}Aborted by user${NC}"
+        echo -e "  ${YELLOW}$MSG_ABORTED_BY_USER${NC}"
         echo ""
         exit 0
     fi
@@ -608,12 +971,12 @@ download_legacy_macos() {
             download_url="$SIERRA_URL"
             ;;
         *)
-            log_error "Unsupported legacy macOS version: $version_num"
+            log_error "$(printf "$MSG_UNSUPPORTED_LEGACY" "$version_num")"
             return 1
             ;;
     esac
     
-    log_info "Downloading macOS $(get_codename $version_num)..."
+    log_info "$(printf "$MSG_DOWNLOADING_MACOS" "$(get_codename $version_num)")"
     # If download does not finish within 30 minutes (--max-time 1800), redownload to establish a new connection.
     curl --retry 5 --max-time 1800 --connect-timeout 10 --progress-bar -L "$download_url" -o "$WORK_DIR/InstallMacOSX.dmg"
 }
@@ -670,9 +1033,9 @@ k=$key")
     mavericks_url=$(echo "$installation_payload" | grep AU | awk -F': ' '{print $2}')
     local token
     token=$(echo "$installation_payload" | grep AT | awk -F': ' '{print $2}')
-    log_info "Mavericks URL detected: $mavericks_url"
+    log_info "$(printf "$MSG_MAVERICKS_URL" "$mavericks_url")"
     echo ""
-    log_info "Downloading macOS Mavericks using special method..."
+    log_info "$MSG_DOWNLOADING_MAVERICKS"
     
     # Download Mavericks InstallESD.dmg
     # If download does not finish within 30 minutes (--max-time 1800), redownload to establish a new connection.
@@ -685,7 +1048,7 @@ install_legacy_app() {
     local dmg_file
     dmg_file="$2"
     
-    log_info "Installing macOS $(get_codename $version_num) installer to /Applications..."
+    log_info "$(printf "$MSG_INSTALLING_TO_APPS" "$(get_codename $version_num)")"
     
     if [[ "$version_num" =~ ^(10\.7|10\.8|10\.10|10\.11|10\.12)$ ]]; then
         # Mount the downloaded DMG image
@@ -695,7 +1058,7 @@ install_legacy_app() {
         # The 'Install OSX/macOS.app' produced by manual install is not suitable
         # for creating a bootable USB using 'createinstallmedia'.
         if [ "$CPU_ARCH" == "arm64" ]; then
-            log_info "Apple silicon detected, using manual installation..."
+            log_info "$MSG_ARM64_MANUAL"
             
             # Extract the package
             pkgutil --expand "$WORK_DIR/downloaded_dmg_mnt"/*.pkg "$WORK_DIR/pkg_extracted"
@@ -715,13 +1078,13 @@ install_legacy_app() {
             sudo ditto "$inner_pkg/InstallESD.dmg" "$app_path/Contents/SharedSupport/InstallESD.dmg"
             sudo chown root:wheel "$app_path/Contents/SharedSupport/InstallESD.dmg"
             
-            log_info "Installed $(get_installer_app_name $version_num) to /Applications"
-            log_warn "Note: This $(get_installer_app_name $version_num) is not suitable for creating a bootable USB using 'createinstallmedia'"
+            log_info "$(printf "$MSG_INSTALLED_TO_APPS" "$(get_installer_app_name $version_num)")"
+            log_warn "$(printf "$MSG_NOT_SUITABLE_USB" "$(get_installer_app_name $version_num)")"
             
         else
             # Standard installation for Intel Macs
             sudo installer -pkg "$WORK_DIR/downloaded_dmg_mnt"/*.pkg -target / && \
-                log_info "Installed $(get_installer_app_name $version_num) to /Applications"
+                log_info "$(printf "$MSG_INSTALLED_TO_APPS" "$(get_installer_app_name $version_num)")"
         fi
         
         sync && detach_disk "$WORK_DIR/downloaded_dmg_mnt"
@@ -740,7 +1103,7 @@ install_legacy_app() {
             sudo cp -a "$WORK_DIR/InstallESD_mnt/Packages/OSInstall.mpkg" "/Applications/Install OS X Mavericks.app/Contents/SharedSupport/"
             sudo chown -R root:wheel "/Applications/Install OS X Mavericks.app/Contents/SharedSupport/"
             
-            log_info "Installed $(get_installer_app_name $version_num) to /Applications"
+            log_info "$(printf "$MSG_INSTALLED_TO_APPS" "$(get_installer_app_name $version_num)")"
             
             # Unmount
             sync && detach_disk "$WORK_DIR/BaseSystem_mnt"
@@ -772,7 +1135,7 @@ direct_download_10_13_10_15() {
             ;;
     esac
     
-    log_info "Downloading macOS $(get_codename $version_num) installer using direct Apple URLs..."
+    log_info "$(printf "$MSG_DIRECT_DL" "$(get_codename $version_num)")"
     echo ""
     
     # Required files for 10.13-10.15
@@ -788,17 +1151,17 @@ direct_download_10_13_10_15() {
     
     # Download all required files
     for filename in "${files[@]}"; do
-        log_info "Downloading ${filename}..."
+        log_info "$(printf "$MSG_DOWNLOADING_FILE" "$filename")"
         curl --retry 5 --max-time 1800 --connect-timeout 10 --progress-bar \
             -L "${base_url}${filename}" -o "$WORK_DIR/${filename}"
         if [ $? -ne 0 ]; then
-            log_error "Failed to download ${filename}"
+            log_error "$(printf "$MSG_DOWNLOAD_FAILED" "$filename")"
             return 1
         fi
     done
     
     echo ""
-    log_info "All files downloaded. Building macOS $(get_codename $version_num) installer app..."
+    log_info "$(printf "$MSG_BUILDING_INSTALLER" "$(get_codename $version_num)")"
     
     # Mount BaseSystem.dmg to extract the app
     hdiutil attach -nobrowse -quiet -mountpoint "$WORK_DIR/BaseSystem_mnt" "$WORK_DIR/BaseSystem.dmg"
@@ -842,7 +1205,7 @@ direct_download_10_13_10_15() {
     # Detach BaseSystem.dmg
     sync && sleep 10 && detach_disk "$WORK_DIR/BaseSystem_mnt"
     
-    log_info "Successfully installed $(get_installer_app_name $version_num) to /Applications"
+    log_info "$(printf "$MSG_INSTALL_SUCCESS" "$(get_installer_app_name $version_num)")"
     return 0
 }
 
@@ -856,16 +1219,16 @@ download_modern_macos() {
     if [[ "$version_num" =~ ^10\.1[345]$ ]]; then
         # For Apple silicon: always use direct download for 10.13-10.15
         if [ "$CPU_ARCH" == "arm64" ]; then
-            log_info "Apple silicon detected"
+            log_info "$MSG_ARM64_DETECTED"
             echo ""
             
             # Show warning on Apple silicon
-            log_warn "╔═════════════════════════════════════════════════════════════════╗"
-            log_warn "║                     Apple silicon Limitation                    ║"
-            log_warn "╠═════════════════════════════════════════════════════════════════╣"
-            log_warn "║ On Apple silicon, softwareupdate cannot download macOS versions ║"
-            log_warn "║ older than the one that originally shipped with your device.    ║"
-            log_warn "╚═════════════════════════════════════════════════════════════════╝"
+            log_warn "$MSG_BOX_TOP"
+            log_warn "$MSG_BOX_AS_TITLE"
+            log_warn "$MSG_BOX_MID"
+            log_warn "$MSG_BOX_AS_L1"
+            log_warn "$MSG_BOX_AS_L2"
+            log_warn "$MSG_BOX_BOT"
             echo ""
             direct_download_10_13_10_15 "$version_num"
             return $?
@@ -873,8 +1236,8 @@ download_modern_macos() {
         
         # For Intel: use direct download if running kernel < 20 (pre-Big Sur)
         if [ "$CPU_ARCH" = "x86_64" ] && [ "$KERNEL_VERSION" -lt 20 ]; then
-            log_info "Intel CPU detected"
-            log_info "This Mac is running a version older than Big Sur, will attempt direct download for macOS $version_name"
+            log_info "$MSG_INTEL_DETECTED"
+            log_info "$(printf "$MSG_INTEL_OLD_OS" "$version_name")"
             direct_download_10_13_10_15 "$version_num"
             return $?
         fi
@@ -884,26 +1247,26 @@ download_modern_macos() {
     # Use softwareupdate for macOS Big Sur and newer
     # Check CPU architecture compatibility for softwareupdate
     if [ "$CPU_ARCH" = "x86_64" ] && [ "$KERNEL_VERSION" -lt 20 ]; then
-        log_info "Intel CPU detected"
+        log_info "$MSG_INTEL_DETECTED"
         
         # Intel Macs require macOS 11 or newer for softwareupdate
-        log_error "Intel Macs must be running macOS 11 (Big Sur) or newer to download macOS using softwareupdate"
-        log_error "Please upgrade your macOS to version 11 or newer"
+        log_error "$MSG_INTEL_NEED_BIGSUR"
+        log_error "$MSG_UPGRADE_MACOS"
         return 1
         
     elif [ "$CPU_ARCH" == "arm64" ]; then
-        log_info "Apple silicon detected"
+        log_info "$MSG_ARM64_DETECTED"
         
         # Show warning on Apple silicon
-        log_warn "╔═════════════════════════════════════════════════════════════════╗"
-        log_warn "║                     Apple silicon Limitation                    ║"
-        log_warn "╠═════════════════════════════════════════════════════════════════╣"
-        log_warn "║ On Apple silicon, softwareupdate cannot download macOS versions ║"
-        log_warn "║ older than the one that originally shipped with your device.    ║"
-        log_warn "╚═════════════════════════════════════════════════════════════════╝"
+        log_warn "$MSG_BOX_TOP"
+        log_warn "$MSG_BOX_AS_TITLE"
+        log_warn "$MSG_BOX_MID"
+        log_warn "$MSG_BOX_AS_L1"
+        log_warn "$MSG_BOX_AS_L2"
+        log_warn "$MSG_BOX_BOT"
     fi
     
-    log_info "Fetching available macOS installers..."
+    log_info "$MSG_FETCHING_INSTALLERS"
     softwareupdate --list-full-installers 2>/dev/null | grep "* Title:" | sed 's/^[[:space:]]*//' > "$WORK_DIR/installers.txt"
     
     # Get latest installer version
@@ -911,29 +1274,29 @@ download_modern_macos() {
     selected_version_number=$(grep -i "$version_name" "$WORK_DIR/installers.txt" | grep -iv "beta" | head -1 | sed -n 's/.*Version: \([^,]*\).*/\1/p')
     
     if [ -z "$selected_version_number" ]; then
-        log_error "macOS $version_name ($version_num) is not available for download on this system"
-        log_info "Available installers:"
+        log_error "$(printf "$MSG_NOT_AVAILABLE" "$version_name" "$version_num")"
+        log_info "$MSG_AVAILABLE_INSTALLERS"
         cat "$WORK_DIR/installers.txt"
         return 1
     fi
     
-    log_info "Found latest $version_name version: $selected_version_number"
-    log_info "Downloading and installing macOS $version_name installer (this may take a while)..."
+    log_info "$(printf "$MSG_FOUND_VERSION" "$version_name" "$selected_version_number")"
+    log_info "$(printf "$MSG_DOWNLOADING_INSTALLER" "$version_name")"
     
     # Download with retries (max 4 times)
     local download_retries
     download_retries=4
     for attempt in $(seq 1 $download_retries); do
-        log_info "Download attempt $attempt of $download_retries..."
+        log_info "$(printf "$MSG_DL_ATTEMPT" "$attempt" "$download_retries")"
         if softwareupdate --fetch-full-installer --full-installer-version "$selected_version_number"; then
-            log_info "Download successful!"
+            log_info "$MSG_DL_SUCCESS"
             sleep 5 && return 0
         fi
         if [ $attempt -eq $download_retries ]; then
-            log_error "Download failed after $download_retries attempts"
+            log_error "$(printf "$MSG_DL_FAILED" "$download_retries")"
             return 1
         fi
-        log_warn "Retrying in 5 seconds..."
+        log_warn "$MSG_RETRYING"
         sleep 5
     done
 }
@@ -950,7 +1313,7 @@ create_iso_dmg_10_7_10_8() {
     local image_format
     image_format=$(echo "$IMAGE_FORMAT" | tr '[:lower:]' '[:upper:]')
     
-    log_info "Creating macOS $(get_codename $version_num) $image_format image..."
+    log_info "$(printf "$MSG_CREATING_IMAGE" "$(get_codename $version_num)" "$image_format")"
     echo ""
     
     # Mount InstallESD.dmg
@@ -977,7 +1340,7 @@ create_iso_dmg_10_7_10_8() {
         # Unmount
         sync && detach_disk "$WORK_DIR/InstallESD_mnt"
         
-        log_info "Converting to ISO format..."
+        log_info "$MSG_CONVERTING_ISO"
         sudo hdiutil makehybrid -quiet -ov -hfs -udf -default-volume-name "$volume_name" "$installer_path/Contents/SharedSupport/InstallESD.dmg" -o "$FINAL_OUTPUT_PATH"
     fi
 }
@@ -992,7 +1355,7 @@ create_iso_10_9_10_11() {
     local version_num
     version_num="$4"
     
-    log_info "Creating macOS $(get_codename $version_num) ISO image..."
+    log_info "$(printf "$MSG_CREATING_ISO" "$(get_codename $version_num)")"
     
     # Mount InstallESD.dmg
     hdiutil attach -nobrowse -quiet -mountpoint "$WORK_DIR/InstallESD_mnt" "$installer_path/Contents/SharedSupport/InstallESD.dmg"
@@ -1030,7 +1393,7 @@ create_iso_10_9_10_11() {
     detach_disk "$DISK_ID" && DISK_ID=""
     
     # Create ISO
-    log_info "Converting to ISO format..."
+    log_info "$MSG_CONVERTING_ISO"
     sudo hdiutil makehybrid -quiet -ov -hfs -udf -default-volume-name "$volume_name" \
         "$WORK_DIR/BaseSystem_converted.dmg" -o "$FINAL_OUTPUT_PATH"
 }
@@ -1045,7 +1408,7 @@ create_dmg_10_9_to_10_12_alt_method() {
     local version_num
     version_num="$4"
     
-    log_info "Creating macOS $(get_codename $version_num) DMG image..."
+    log_info "$(printf "$MSG_CREATING_DMG" "$(get_codename $version_num)")"
     echo ""
     
     # Mount InstallESD.dmg
@@ -1111,11 +1474,11 @@ create_dmg_10_9_to_10_12_alt_method() {
     detach_disk "$DISK_ID" && DISK_ID=""
 	
     # Optimize DMG file size
-    log_info "Optimizing DMG file size..."
+    log_info "$MSG_OPTIMIZING_DMG"
     sudo hdiutil resize -size min "$WORK_DIR/installer_gpt.dmg"
     
     # Move to output
-    log_info "Move to $FINAL_OUTPUT_PATH"
+    log_info "$(printf "$MSG_MOVE_TO" "$FINAL_OUTPUT_PATH")"
     mv -f "$WORK_DIR/installer_gpt.dmg" "$FINAL_OUTPUT_PATH"
 }
 
@@ -1131,9 +1494,9 @@ create_iso_dmg_10_15_alt_method() {
     local image_format
     image_format=$(echo "$IMAGE_FORMAT" | tr '[:lower:]' '[:upper:]')
     
-    log_info "Apple Silicon detected. Using alternative method for Catalina instead of 'createinstallmedia'"
+    log_info "$MSG_AS_CATALINA_ALT"
     echo ""
-    log_info "Creating macOS $(get_codename $version_num) $image_format image..."
+    log_info "$(printf "$MSG_CREATING_IMAGE" "$(get_codename $version_num)" "$image_format")"
     echo ""
     
     # Mount InstallESD.dmg
@@ -1174,14 +1537,14 @@ create_iso_dmg_10_15_alt_method() {
     # Create final image
     if [ "$IMAGE_FORMAT" == "dmg" ]; then
         # Optimize DMG file size
-        log_info "Optimizing DMG file size..."
+        log_info "$MSG_OPTIMIZING_DMG"
         sudo hdiutil resize -size min "$WORK_DIR/BaseSystem_converted.dmg"
         
         # Move to output
-        log_info "Move to $FINAL_OUTPUT_PATH"
+        log_info "$(printf "$MSG_MOVE_TO" "$FINAL_OUTPUT_PATH")"
         mv -f "$WORK_DIR/BaseSystem_converted.dmg" "$FINAL_OUTPUT_PATH"
     else
-        log_info "Converting to ISO format..."
+        log_info "$MSG_CONVERTING_ISO"
         sudo hdiutil makehybrid -quiet -ov -hfs -udf -default-volume-name "$volume_name" "$WORK_DIR/BaseSystem_converted.dmg" -o "$FINAL_OUTPUT_PATH"
     fi
 }
@@ -1214,7 +1577,7 @@ create_iso_10_12_and_later() {
         fi
     fi
     
-    log_info "Creating macOS $(get_codename $version_num) ISO image..."
+    log_info "$(printf "$MSG_CREATING_ISO" "$(get_codename $version_num)")"
     echo ""
     
     # Create sparse image
@@ -1228,13 +1591,13 @@ create_iso_10_12_and_later() {
     # For macOS 10.12, need to patch Info.plist
     # For macOS 10.10-10.12, need to add --applicationpath
     if [ "$version_num" == "10.12" ]; then
-        log_info "Patching Info.plist for Sierra compatibility..."
+        log_info "$MSG_PATCHING_SIERRA"
         sudo /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString '12.6.03'" "$installer_path/Contents/Info.plist"
         cmd="$cmd --applicationpath \"$installer_path\""
     fi
     
     # Create install media
-    log_info "Running createinstallmedia..."
+    log_info "$MSG_RUNNING_CIM"
     bash -c "$cmd"
     sync && sleep 5
     
@@ -1253,7 +1616,7 @@ create_iso_10_12_and_later() {
     detach_disk "$DISK_ID" && DISK_ID=""
     
     # Create ISO from sparse image
-    log_info "Converting to ISO format..."
+    log_info "$MSG_CONVERTING_ISO"
     sudo hdiutil makehybrid -quiet -ov -hfs -udf "$WORK_DIR/installer.sparseimage" -o "$FINAL_OUTPUT_PATH"
 }
 
@@ -1285,7 +1648,7 @@ create_dmg_10_10_and_later() {
         fi
     fi
     
-    log_info "Creating macOS $(get_codename $version_num) DMG image..."
+    log_info "$(printf "$MSG_CREATING_DMG" "$(get_codename $version_num)")"
     echo ""
     
     # Determine DMG size based on macOS version
@@ -1323,14 +1686,14 @@ create_dmg_10_10_and_later() {
             cmd="$cmd --applicationpath \"$installer_path\""
             ;;
         10.12)
-            log_info "Patching Info.plist for Sierra compatibility..."
+            log_info "$MSG_PATCHING_SIERRA"
             sudo /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString '12.6.03'" "$installer_path/Contents/Info.plist"
             cmd="$cmd --applicationpath \"$installer_path\""
             ;;
     esac
     
     # Create install media
-    log_info "Running createinstallmedia..."
+    log_info "$MSG_RUNNING_CIM"
     bash -c "$cmd"
     sync && sleep 5
     
@@ -1340,7 +1703,7 @@ create_dmg_10_10_and_later() {
         sudo /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString '12.6.06'" "/Volumes/Install macOS Sierra/Install macOS Sierra.app/Contents/Info.plist"
     fi
     
-    log_info "Starting DMG file size optimization..."
+    log_info "$MSG_STARTING_OPT"
     
     # Check minimum size requirements
     MIN_SIZE=$(diskutil resizeVolume ${DISK_ID}s2 limits | grep "Minimum (constrained by file usage)" | sed 's/.*(\([0-9]*\) Bytes)/\1/')
@@ -1353,19 +1716,19 @@ create_dmg_10_10_and_later() {
     esac
     
     # Consolidate the installer data partition by shrinking the macOS installer partition to the minimum size.
-    log_info "Shrinking macOS installer partition to minimum..."
+    log_info "$MSG_SHRINKING"
     diskutil resizeVolume ${DISK_ID}s2 "${MIN_SIZE}B" free free 0 >/dev/null 2>&1
     
     # Expand back to consolidate
-    log_info "Expanding back to consolidate data ..."
+    log_info "$MSG_EXPANDING"
     for attempt in $(seq 1 $RETRIES_COUNT); do
-        log_info "Resize attempt $attempt of $RETRIES_COUNT..."
+        log_info "$(printf "$MSG_RESIZE_ATTEMPT" "$attempt" "$RETRIES_COUNT")"
         if diskutil resizeVolume ${DISK_ID}s2 0 >/dev/null 2>&1; then
-            log_info "Partition resized successfully"
+            log_info "$MSG_RESIZE_SUCCESS"
             break
         fi
         if [ $attempt -lt $RETRIES_COUNT ]; then
-            log_warn "Resize failed, retrying..."
+            log_warn "$MSG_RESIZE_RETRY"
             sync && sleep 5
         fi
     done
@@ -1379,7 +1742,7 @@ create_dmg_10_10_and_later() {
     detach_disk "$DISK_ID" && DISK_ID=""
     
     # Optimize DMG file size
-    log_info "Final optimization..."
+    log_info "$MSG_FINAL_OPT"
     sudo hdiutil resize -size min "$WORK_DIR/installer.dmg"
     
     # Move to output and append .iso extension
@@ -1390,7 +1753,7 @@ create_dmg_10_10_and_later() {
 main() {
     echo -e "${BOLD}${CYAN}"
     echo "╔══════════════════════════════════════════════════════════════════════════════╗"
-    echo "║ mkmaciso – the ultimate tool for creating macOS installer ISO and DMG images ║"
+    echo "║ $MSG_TAGLINE ║"
     echo "╚══════════════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     
@@ -1405,7 +1768,7 @@ main() {
     if [[ -z "$IMAGE_FORMAT" ]]; then
         IMAGE_FORMAT="iso"
     elif [[ "$IMAGE_FORMAT" != "iso" && "$IMAGE_FORMAT" != "dmg" ]]; then
-        log_warn "Invalid image format '$IMAGE_FORMAT'; falling back to dmg"
+        log_warn "$(printf "$MSG_INVALID_FORMAT" "$IMAGE_FORMAT")"
         IMAGE_FORMAT="dmg"
     fi
     
@@ -1427,16 +1790,16 @@ main() {
     VERSION_NAME=$(get_codename "$VERSION_NUM")
 
     if [ -z "$VERSION_NAME" ]; then
-        log_info "Run with -h or --help for usage"
+        log_info "$MSG_RUN_HELP"
         echo ""
-        log_error "Unknown macOS version: $VERSION"
-        log_info "Supported versions: 10.7, 10.8, 10.9, 10.10, 10.11, 10.12, 10.13, 10.14, 10.15, 11, 12, 13, 14, 15, 26"
-        log_info "Supported codenames: lion, mountain-lion, mavericks, yosemite, el-capitan, sierra, high-sierra, mojave, catalina, big-sur, monterey, ventura, sonoma, sequoia, tahoe"
+        log_error "$(printf "$MSG_UNKNOWN_VERSION" "$VERSION")"
+        log_info "$MSG_SUPPORTED_VERSIONS 10.7, 10.8, 10.9, 10.10, 10.11, 10.12, 10.13, 10.14, 10.15, 11, 12, 13, 14, 15, 26"
+        log_info "$MSG_SUPPORTED_CODENAMES lion, mountain-lion, mavericks, yosemite, el-capitan, sierra, high-sierra, mojave, catalina, big-sur, monterey, ventura, sonoma, sequoia, tahoe"
         exit 1
     fi
     
-    log_info "Target macOS:${GREEN} $VERSION_NAME ($VERSION_NUM) ${NC}"
-    log_info "Image format:${GREEN} $(echo $IMAGE_FORMAT | tr '[:lower:]' '[:upper:]') ${NC}"
+    log_info "$MSG_TARGET_MACOS${GREEN} $VERSION_NAME ($VERSION_NUM) ${NC}"
+    log_info "$MSG_IMAGE_FORMAT_LABEL${GREEN} $(echo $IMAGE_FORMAT | tr '[:lower:]' '[:upper:]') ${NC}"
     
     # Determine output filename if not specified
     if [ -z "$OUTPUT_PATH" ]; then
@@ -1453,22 +1816,22 @@ main() {
         fi
     fi
     
-    log_info "Output path:${GREEN} $OUTPUT_PATH ${NC}"
+    log_info "$MSG_OUTPUT_PATH_LABEL${GREEN} $OUTPUT_PATH ${NC}"
     echo ""
     
     # Create work directory
     WORK_DIR=$(mktemp -d -t LongQT-sea)
-    log_info "Working directory:${CYAN} $WORK_DIR ${NC}"
+    log_info "$MSG_WORK_DIR_LABEL${CYAN} $WORK_DIR ${NC}"
     echo ""
     
     # Check if installer already exists
     INSTALLER_PATH="/Applications/$(get_installer_app_name "$VERSION_NUM").app"
     
     if [ -n "$INSTALLER_PATH" ] && [ -d "$INSTALLER_PATH" ]; then
-        log_info "Found existing installer at:${CYAN} $INSTALLER_PATH ${NC}"
+        log_info "$MSG_FOUND_INSTALLER${CYAN} $INSTALLER_PATH ${NC}"
         echo ""
     else
-        log_info "Installer not found, downloading..."
+        log_info "$MSG_INSTALLER_NOT_FOUND"
         
         # Download and install
         if [[ "$VERSION_NUM" =~ ^10\.(7|8|9|10|11|12)$ ]]; then
@@ -1481,7 +1844,7 @@ main() {
         fi
         
         if [ ! -d "$INSTALLER_PATH" ]; then
-            log_error "Failed to install macOS installer app"
+            log_error "$MSG_INSTALL_FAILED"
             exit 1
         fi
     fi
@@ -1518,76 +1881,76 @@ main() {
         MIN_SIZE=4294967296
 
         if [ "$FILE_SIZE_BYTES" -lt "$MIN_SIZE" ]; then
-            log_error "Final image is smaller than 4GB"
-            log_error "The file is likely corrupted or incomplete"
-            log_warn "Remove corrupted file..."
+            log_error "$MSG_IMAGE_TOO_SMALL"
+            log_error "$MSG_IMAGE_CORRUPT"
+            log_warn "$MSG_REMOVING_CORRUPT"
             rm -f "$FINAL_OUTPUT_PATH"
             exit 1
         fi
         
         echo ""
-        log_info "Successfully created installer image!"
-        log_info "File: $FINAL_OUTPUT_PATH"
-        log_info "Size: $FILE_SIZE_GB"
+        log_info "$MSG_CREATE_SUCCESS"
+        log_info "$MSG_FILE_LABEL $FINAL_OUTPUT_PATH"
+        log_info "$MSG_SIZE_LABEL $FILE_SIZE_GB"
         echo ""
         
         if [ "$IMAGE_FORMAT" == "iso" ]; then
-            log_info "This ISO image is intended for creating macOS virtual machine:"
-            log_info "  - Compatible with Proxmox VE, QEMU, VMware, and VirtualBox"
-            log_info "  - Add as DVD/CD drive to the VM"
+            log_info "$MSG_ISO_INTENDED"
+            log_info "$MSG_ISO_COMPAT"
+            log_info "$MSG_ISO_ATTACH"
             echo ""
         else
-            log_info "This DMG image is intended for:"
-            log_info "  - Flash to USB drive using Rufus (Windows) or dd (Linux)"
-            log_info "  - Can also be used with virtual machines (requires conversion to .vhd for Hyper-V or .vmdk for VMware)"
-            log_info "  - Add to the VM as a virtual hard drive"
+            log_info "$MSG_DMG_INTENDED"
+            log_info "$MSG_DMG_FLASH"
+            log_info "$MSG_DMG_VM"
+            log_info "$MSG_DMG_HDD"
             echo ""
         fi
     else
-        log_error "Failed to create macOS_${VERSION_NAME}.${IMAGE_FORMAT} image"
+        log_error "$(printf "$MSG_CREATE_FAILED" "$VERSION_NAME" "$IMAGE_FORMAT")"
         exit 1
     fi
 }
 
 # Show usage if -h or --help is passed
 if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
-    cat << 'EOF'
-╔══════════════════════════════════════════════════════════════════════════════╗"
-║ mkmaciso – the ultimate tool for creating macOS installer ISO and DMG images ║"
-╚══════════════════════════════════════════════════════════════════════════════╝"
-
-Usage:
-  mkmaciso [VERSION] [FORMAT] [OUTPUT_PATH]
-  mkmaciso                                     # Interactive mode
-
-Parameters:
-  VERSION         macOS version number or codename, e.g. 26 or Tahoe
-  FORMAT          iso or dmg (default: iso)
-  OUTPUT_PATH     Output file path (default: ./macOS_<version>.<format>)
-
-Supported versions:
-  10.7  Lion             10.14  Mojave
-  10.8  Mountain Lion    10.15  Catalina
-  10.9  Mavericks        11     Big Sur
-  10.10 Yosemite         12     Monterey
-  10.11 El Capitan       13     Ventura
-  10.12 Sierra           14     Sonoma
-  10.13 High Sierra      15     Sequoia
-                         26     Tahoe
-
-Examples:
-  mkmaciso                              Interactive mode
-  mkmaciso 14                           Create Sonoma ISO
-  mkmaciso 14 dmg                       Create Sonoma DMG
-  mkmaciso sonoma dmg ~/Desktop/out.dmg Create Sonoma DMG at specified path
-
-Requirements:
-  - macOS 11 (Big Sur) or later for create macOS 10.13+ image
-  - Internet connection for downloading installers
-  - Sufficient disk space (~20-40GB temporary, final size varies)
-  - Administrator privileges (sudo)
-  - For best results, run this on Intel Macs
-EOF
+    echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+    echo "║ $MSG_TAGLINE ║"
+    echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "$MSG_HELP_USAGE"
+    echo "  mkmaciso [VERSION] [FORMAT] [OUTPUT_PATH]"
+    echo "  mkmaciso                                     # $MSG_INTERACTIVE"
+    echo ""
+    echo "$MSG_HELP_PARAMS"
+    echo "  VERSION         $MSG_HELP_PARAM_VERSION"
+    echo "  FORMAT          $MSG_HELP_PARAM_FORMAT"
+    echo "  OUTPUT_PATH     $MSG_HELP_PARAM_OUTPUT"
+    echo "  --lang zh|en    $MSG_HELP_LANG_FLAG"
+    echo "                  $MSG_HELP_LANG_ENV"
+    echo ""
+    echo "$MSG_HELP_VERSIONS"
+    echo "  10.7  Lion             10.14  Mojave"
+    echo "  10.8  Mountain Lion    10.15  Catalina"
+    echo "  10.9  Mavericks        11     Big Sur"
+    echo "  10.10 Yosemite         12     Monterey"
+    echo "  10.11 El Capitan       13     Ventura"
+    echo "  10.12 Sierra           14     Sonoma"
+    echo "  10.13 High Sierra      15     Sequoia"
+    echo "                         26     Tahoe"
+    echo ""
+    echo "$MSG_HELP_EXAMPLES"
+    echo "  mkmaciso                              # $MSG_INTERACTIVE"
+    echo "  mkmaciso 14                           # $MSG_HELP_EX_ISO"
+    echo "  mkmaciso 14 dmg                       # $MSG_HELP_EX_DMG"
+    echo "  mkmaciso sonoma dmg ~/Desktop/out.dmg # $MSG_HELP_EX_PATH"
+    echo ""
+    echo "$MSG_HELP_REQS"
+    echo "  - $MSG_HELP_REQ_OS"
+    echo "  - $MSG_HELP_REQ_NET"
+    echo "  - $MSG_HELP_REQ_DISK"
+    echo "  - $MSG_HELP_REQ_SUDO"
+    echo "  - $MSG_HELP_REQ_INTEL"
     exit 0
 fi
 
@@ -1595,12 +1958,12 @@ fi
 if [ $# -eq 0 ]; then
     if [ -p /dev/stdin ] || [ ! -t 0 ]; then
         clear
-        log_error "Interactive mode unavailable when piped"
+        log_error "$MSG_PIPED_UNAVAILABLE"
         log_info "Usage: curl -sL <URL> | bash -s <VERSION> [FORMAT] [OUTPUT]"
         echo ""
-        log_info "Example: curl -sL <URL> | bash -s 26"
-        log_info "Example: curl -sL <URL> | bash -s 26 dmg"
-        log_info "Example: curl -sL <URL> | bash -s 26 iso ~/Desktop/Tahoe.iso"
+        log_info "$MSG_EXAMPLE_LABEL curl -sL <URL> | bash -s 26"
+        log_info "$MSG_EXAMPLE_LABEL curl -sL <URL> | bash -s 26 dmg"
+        log_info "$MSG_EXAMPLE_LABEL curl -sL <URL> | bash -s 26 iso ~/Desktop/Tahoe.iso"
         exit 1
     fi
     run_interactive_menu
